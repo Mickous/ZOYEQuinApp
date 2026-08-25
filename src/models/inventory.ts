@@ -30,7 +30,9 @@ export type StockMovement = {
   id: EntityId;
   productId: EntityId;
   type: StockMovementType;
-  quantity: number;
+  quantityDelta: number;
+  quantityBefore: number;
+  quantityAfter: number;
   reason: string;
   referenceId?: EntityId;
   unitCost?: number;
