@@ -29,30 +29,36 @@ export const inventoryService = {
         ? input.quantity
         : -input.quantity;
 
+      if (input.type === 'ADJUSTMENT') {
+        throw new Error('Un ajustement doit préciser une variation positive ou négative.');
+      }
+
       if (product.stockQuantity + delta < 0) {
         throw new Error('Stock insuffisant.');
       }
 
-      const updated: Product = {
-        ...product,
-        stockQuantity: product.stockQuantity + delta,
-        updatedAt: new Date().toISOString(),
-      };
+      return applyStockDelta(product, delta, input.type, input.reason, input.referenceId, input.unitCost);
+    });
+  },
 
-      const movement: StockMovement = {
-        id: createId('stock'),
-        productId: product.id,
-        type: input.type,
-        quantity: input.quantity,
-        reason: input.reason.trim() || 'Aucun motif indiqué',
-        referenceId: input.referenceId,
-        unitCost: input.unitCost,
-        createdAt: new Date().toISOString(),
-      };
+  async adjustStock(input: Omit<StockChangeInput, 'type'> & { delta: number }): Promise<Product> {
+    if (!Number.isFinite(input.delta) || input.delta === 0) {
+      throw new Error('La variation d’ajustement doit être différente de zéro.');
+    }
 
-      await db.products.put(updated);
-      await db.stockMovements.put(movement);
-      return updated;
+    return db.transaction('rw', db.products, db.stockMovements, async () => {
+      const product = await db.products.get(input.productId);
+      if (!product || !product.active) throw new Error('Produit introuvable ou inactif.');
+      if (product.stockQuantity + input.delta < 0) throw new Error('L’ajustement ne peut pas rendre le stock négatif.');
+
+      return applyStockDelta(
+        product,
+        input.delta,
+        'ADJUSTMENT',
+        input.reason,
+        input.referenceId,
+        input.unitCost,
+      );
     });
   },
 
@@ -63,8 +69,36 @@ export const inventoryService = {
   removeStock(input: Omit<StockChangeInput, 'type'>) {
     return this.changeStock({ ...input, type: 'OUT' });
   },
-
-  adjustStock(input: Omit<StockChangeInput, 'type'>) {
-    return this.changeStock({ ...input, type: 'ADJUSTMENT' });
-  },
 };
+
+async function applyStockDelta(
+  product: Product,
+  delta: number,
+  type: StockMovementType,
+  reason: string,
+  referenceId?: string,
+  unitCost?: number,
+): Promise<Product> {
+  const now = new Date().toISOString();
+  const nextQuantity = product.stockQuantity + delta;
+  const updated: Product = {
+    ...product,
+    stockQuantity: nextQuantity,
+    updatedAt: now,
+  };
+
+  const movement: StockMovement = {
+    id: createId('stock'),
+    productId: product.id,
+    type,
+    quantity: Math.abs(delta),
+    reason: reason.trim() || 'Aucun motif indiqué',
+    referenceId,
+    unitCost,
+    createdAt: now,
+  };
+
+  await db.products.put(updated);
+  await db.stockMovements.put(movement);
+  return updated;
+}
