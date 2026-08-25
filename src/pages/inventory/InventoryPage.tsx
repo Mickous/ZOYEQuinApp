@@ -2,11 +2,10 @@ import { useEffect, useMemo, useState } from 'react';
 import { productRepository } from '../../repositories/productRepository';
 import { stockMovementRepository } from '../../repositories/stockMovementRepository';
 import { inventoryService } from '../../services/inventoryService';
-import type { Product, StockMovement } from '../../models/inventory';
+import { StockMovementModal } from '../../components/inventory/StockMovementModal';
+import type { Product, StockMovement, StockMovementType } from '../../models/inventory';
 
-const emptyForm = {
-  name: '', unit: 'pièce', purchasePrice: '0', sellingPrice: '0', stockQuantity: '0', minimumStock: '0',
-};
+const emptyForm = { name: '', unit: 'pièce', purchasePrice: '0', sellingPrice: '0', stockQuantity: '0', minimumStock: '0' };
 
 export function InventoryPage() {
   const [products, setProducts] = useState<Product[]>([]);
@@ -14,12 +13,10 @@ export function InventoryPage() {
   const [movements, setMovements] = useState<StockMovement[]>([]);
   const [query, setQuery] = useState('');
   const [form, setForm] = useState(emptyForm);
+  const [modal, setModal] = useState<StockMovementType | null>(null);
   const [error, setError] = useState('');
 
-  async function refresh() {
-    setProducts(await productRepository.listActive());
-  }
-
+  async function refresh() { setProducts(await productRepository.listActive()); }
   useEffect(() => { void refresh(); }, []);
 
   const filtered = useMemo(() => {
@@ -33,42 +30,24 @@ export function InventoryPage() {
   }
 
   async function createProduct(event: React.FormEvent) {
-    event.preventDefault();
-    setError('');
+    event.preventDefault(); setError('');
     try {
-      const product = await productRepository.create({
-        name: form.name,
-        unit: form.unit,
-        purchasePrice: Number(form.purchasePrice),
-        sellingPrice: Number(form.sellingPrice),
-        stockQuantity: Number(form.stockQuantity),
-        minimumStock: Number(form.minimumStock),
-        active: true,
-      });
-      if (product.stockQuantity > 0) {
-        await inventoryService.addStock({ productId: product.id, quantity: product.stockQuantity, reason: 'Stock initial' });
-      }
-      setForm(emptyForm);
-      await refresh();
-    } catch (e) {
-      setError(e instanceof Error ? e.message : 'Erreur lors de la création.');
-    }
+      const initialStock = Number(form.stockQuantity);
+      if (!form.name.trim()) throw new Error('Le nom est obligatoire.');
+      const product = await productRepository.create({ name: form.name, unit: form.unit, purchasePrice: Number(form.purchasePrice), sellingPrice: Number(form.sellingPrice), stockQuantity: 0, minimumStock: Number(form.minimumStock), active: true });
+      if (initialStock > 0) await inventoryService.addStock({ productId: product.id, quantity: initialStock, reason: 'Stock initial' });
+      setForm(emptyForm); await refresh();
+    } catch (e) { setError(e instanceof Error ? e.message : 'Erreur lors de la création.'); }
   }
 
-  async function move(type: 'IN' | 'OUT') {
+  async function submitMovement(quantity: number, reason: string, delta?: number) {
     if (!selected) return;
-    const raw = window.prompt(type === 'IN' ? 'Quantité à ajouter' : 'Quantité à retirer');
-    const quantity = Number(raw);
-    if (!Number.isFinite(quantity) || quantity <= 0) return;
-    try {
-      const updated = type === 'IN'
-        ? await inventoryService.addStock({ productId: selected.id, quantity, reason: type === 'IN' ? 'Entrée manuelle' : 'Sortie manuelle' })
-        : await inventoryService.removeStock({ productId: selected.id, quantity, reason: 'Sortie manuelle' });
-      await selectProduct(updated);
-      await refresh();
-    } catch (e) {
-      setError(e instanceof Error ? e.message : 'Erreur de stock.');
-    }
+    const updated = modal === 'IN'
+      ? await inventoryService.addStock({ productId: selected.id, quantity, reason })
+      : modal === 'OUT'
+        ? await inventoryService.removeStock({ productId: selected.id, quantity, reason })
+        : await inventoryService.adjustStock({ productId: selected.id, delta: delta ?? quantity, reason });
+    await selectProduct(updated); await refresh();
   }
 
   return (
@@ -76,7 +55,6 @@ export function InventoryPage() {
       <h1>Produits & Stock</h1>
       {error && <p role="alert">{error}</p>}
       <input aria-label="Rechercher un produit" placeholder="Rechercher..." value={query} onChange={(e) => setQuery(e.target.value)} />
-
       <form onSubmit={createProduct} style={{ display: 'grid', gap: 8, margin: '20px 0' }}>
         <h2>Nouveau produit</h2>
         <input required placeholder="Nom" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} />
@@ -87,26 +65,20 @@ export function InventoryPage() {
         <input type="number" min="0" placeholder="Stock minimum" value={form.minimumStock} onChange={(e) => setForm({ ...form, minimumStock: e.target.value })} />
         <button type="submit">Créer le produit</button>
       </form>
-
       <section>
         {filtered.map((product) => (
           <button key={product.id} onClick={() => void selectProduct(product)} style={{ display: 'block', width: '100%', textAlign: 'left', marginBottom: 8, padding: 12 }}>
-            <strong>{product.name}</strong><br />
-            Stock : {product.stockQuantity} {product.unit} — Vente : {product.sellingPrice.toLocaleString('fr-FR')} FCFA
+            <strong>{product.name}</strong><br />Stock : {product.stockQuantity} {product.unit} — Vente : {product.sellingPrice.toLocaleString('fr-FR')} FCFA
           </button>
         ))}
       </section>
-
-      {selected && (
-        <section>
-          <h2>{selected.name}</h2>
-          <p>Stock actuel : <strong>{selected.stockQuantity} {selected.unit}</strong></p>
-          <button onClick={() => void move('IN')}>Entrée</button>{' '}
-          <button onClick={() => void move('OUT')}>Sortie</button>
-          <h3>Historique</h3>
-          {movements.map((m) => <p key={m.id}>{new Date(m.createdAt).toLocaleString('fr-FR')} — {m.quantityDelta > 0 ? '+' : ''}{m.quantityDelta} — {m.reason}</p>)}
-        </section>
-      )}
+      {selected && <section>
+        <h2>{selected.name}</h2><p>Stock actuel : <strong>{selected.stockQuantity} {selected.unit}</strong></p>
+        <button onClick={() => setModal('IN')}>Entrée</button>{' '}<button onClick={() => setModal('OUT')}>Sortie</button>{' '}<button onClick={() => setModal('ADJUSTMENT')}>Ajuster</button>
+        <h3>Historique</h3>
+        {movements.map((m) => <p key={m.id}>{new Date(m.createdAt).toLocaleString('fr-FR')} — {m.quantityDelta > 0 ? '+' : ''}{m.quantityDelta} — {m.reason}</p>)}
+      </section>}
+      {modal && selected && <StockMovementModal type={modal} onClose={() => setModal(null)} onSubmit={submitMovement} />}
     </main>
   );
 }
