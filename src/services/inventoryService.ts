@@ -5,7 +5,7 @@ import type { Product, StockMovement, StockMovementType } from '../models/invent
 export type StockChangeInput = {
   productId: string;
   quantity: number;
-  type: StockMovementType;
+  type: Exclude<StockMovementType, 'ADJUSTMENT'>;
   reason: string;
   referenceId?: string;
   unitCost?: number;
@@ -17,9 +17,14 @@ function assertPositiveQuantity(quantity: number) {
   }
 }
 
+function assertReason(reason: string) {
+  if (!reason.trim()) throw new Error('Le motif du mouvement est obligatoire.');
+}
+
 export const inventoryService = {
   async changeStock(input: StockChangeInput): Promise<Product> {
     assertPositiveQuantity(input.quantity);
+    assertReason(input.reason);
 
     return db.transaction('rw', db.products, db.stockMovements, async () => {
       const product = await db.products.get(input.productId);
@@ -29,36 +34,24 @@ export const inventoryService = {
         ? input.quantity
         : -input.quantity;
 
-      if (input.type === 'ADJUSTMENT') {
-        throw new Error('Un ajustement doit préciser une variation positive ou négative.');
-      }
-
-      if (product.stockQuantity + delta < 0) {
-        throw new Error('Stock insuffisant.');
-      }
+      if (product.stockQuantity + delta < 0) throw new Error('Stock insuffisant.');
 
       return applyStockDelta(product, delta, input.type, input.reason, input.referenceId, input.unitCost);
     });
   },
 
-  async adjustStock(input: Omit<StockChangeInput, 'type'> & { delta: number }): Promise<Product> {
+  async adjustStock(input: { productId: string; delta: number; reason: string; referenceId?: string; unitCost?: number }): Promise<Product> {
     if (!Number.isFinite(input.delta) || input.delta === 0) {
       throw new Error('La variation d’ajustement doit être différente de zéro.');
     }
+    assertReason(input.reason);
 
     return db.transaction('rw', db.products, db.stockMovements, async () => {
       const product = await db.products.get(input.productId);
       if (!product || !product.active) throw new Error('Produit introuvable ou inactif.');
       if (product.stockQuantity + input.delta < 0) throw new Error('L’ajustement ne peut pas rendre le stock négatif.');
 
-      return applyStockDelta(
-        product,
-        input.delta,
-        'ADJUSTMENT',
-        input.reason,
-        input.referenceId,
-        input.unitCost,
-      );
+      return applyStockDelta(product, input.delta, 'ADJUSTMENT', input.reason, input.referenceId, input.unitCost);
     });
   },
 
@@ -81,24 +74,22 @@ async function applyStockDelta(
 ): Promise<Product> {
   const now = new Date().toISOString();
   const nextQuantity = product.stockQuantity + delta;
-  const updated: Product = {
-    ...product,
-    stockQuantity: nextQuantity,
-    updatedAt: now,
-  };
+  const updated: Product = { ...product, stockQuantity: nextQuantity, updatedAt: now };
 
   const movement: StockMovement = {
     id: createId('stock'),
     productId: product.id,
     type,
-    quantity: Math.abs(delta),
-    reason: reason.trim() || 'Aucun motif indiqué',
+    quantityDelta: delta,
+    quantityBefore: product.stockQuantity,
+    quantityAfter: nextQuantity,
+    reason: reason.trim(),
     referenceId,
     unitCost,
     createdAt: now,
   };
 
   await db.products.put(updated);
-  await db.stockMovements.put(movement);
+  await db.stockMovements.add(movement);
   return updated;
 }
