@@ -1,7 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { productRepository } from '../../repositories/productRepository';
 import { customerRepository } from '../../repositories/customerRepository';
-import { saleRepository } from '../../repositories/saleRepository';
 import { saleService } from '../../services/saleService';
 import { formatMoney } from '../../utils/stock';
 import type { PaymentMethod, Sale } from '../../models/sales';
@@ -10,6 +9,7 @@ import type { Customer } from '../../models/customer';
 
 type CartLine = { product: Product; quantity: number; unitPrice: number };
 const paymentLabels: Record<PaymentMethod, string> = { CASH: 'Espèces', MOBILE_MONEY: 'Mobile Money', CARD: 'Carte', CREDIT: 'Crédit', OTHER: 'Autre' };
+const creditPaymentLabels = { CASH: 'Espèces', MOBILE_MONEY: 'Mobile Money', CARD: 'Carte', OTHER: 'Autre' } as const;
 
 export function SalesPage() {
   const [products, setProducts] = useState<Product[]>([]);
@@ -18,6 +18,7 @@ export function SalesPage() {
   const [query, setQuery] = useState('');
   const [discount, setDiscount] = useState('0');
   const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>('CASH');
+  const [initialCreditPaymentMethod, setInitialCreditPaymentMethod] = useState<'CASH' | 'MOBILE_MONEY' | 'CARD' | 'OTHER'>('CASH');
   const [amountPaid, setAmountPaid] = useState('0');
   const [customerId, setCustomerId] = useState('');
   const [lastSale, setLastSale] = useState<Sale | null>(null);
@@ -47,12 +48,12 @@ export function SalesPage() {
     setQuery('');
   }
   function updateQuantity(productId: string, quantity: number) { if (quantity <= 0) setCart(cart.filter((line) => line.product.id !== productId)); else setCart(cart.map((line) => line.product.id === productId ? { ...line, quantity } : line)); }
-  function handlePaymentChange(value: PaymentMethod) { setPaymentMethod(value); if (value !== 'CREDIT') setCustomerId(''); }
+  function handlePaymentChange(value: PaymentMethod) { setPaymentMethod(value); if (value !== 'CREDIT') { setCustomerId(''); setAmountPaid('0'); } }
 
   async function checkout() {
     setError('');
     try {
-      const sale = await saleService.create({ items: cart.map((line) => ({ productId: line.product.id, quantity: line.quantity, unitPrice: line.unitPrice })), discount: discountValue, paymentMethod, amountPaid: paid, customerId: paymentMethod === 'CREDIT' ? customerId : undefined });
+      const sale = await saleService.create({ items: cart.map((line) => ({ productId: line.product.id, quantity: line.quantity, unitPrice: line.unitPrice })), discount: discountValue, paymentMethod, amountPaid: paid, customerId: paymentMethod === 'CREDIT' ? customerId : undefined, initialCreditPaymentMethod: paymentMethod === 'CREDIT' ? initialCreditPaymentMethod : undefined });
       setLastSale(sale); setCart([]); setDiscount('0'); setAmountPaid('0'); setCustomerId(''); setPaymentMethod('CASH'); await refresh();
     } catch (e) { setError(e instanceof Error ? e.message : 'Impossible de valider la vente.'); }
   }
@@ -69,13 +70,15 @@ export function SalesPage() {
         <label>Remise <input type="number" min="0" value={discount} onChange={(e) => setDiscount(e.target.value)} /></label>
         <p>Total : <strong>{formatMoney(total)}</strong></p>
         <label>Paiement <select value={paymentMethod} onChange={(e) => handlePaymentChange(e.target.value as PaymentMethod)}>{Object.entries(paymentLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>
-        {paymentMethod === 'CREDIT' && <label>Client <select required value={customerId} onChange={(e) => setCustomerId(e.target.value)}><option value="">Sélectionner un client</option>{customers.map((customer) => <option key={customer.id} value={customer.id}>{customer.name}{customer.phone ? ` — ${customer.phone}` : ''}</option>)}</select></label>}
+        {paymentMethod === 'CREDIT' && <>
+          <label>Client <select required value={customerId} onChange={(e) => setCustomerId(e.target.value)}><option value="">Sélectionner un client</option>{customers.map((customer) => <option key={customer.id} value={customer.id}>{customer.name}{customer.phone ? ` — ${customer.phone}` : ''}</option>)}</select></label>
+          <label>Mode du paiement initial <select value={initialCreditPaymentMethod} onChange={(e) => setInitialCreditPaymentMethod(e.target.value as typeof initialCreditPaymentMethod)}>{Object.entries(creditPaymentLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>
+        </>}
         <label>Montant payé <input type="number" min="0" value={amountPaid} onChange={(e) => setAmountPaid(e.target.value)} /></label>
         <p>{paymentMethod === 'CREDIT' ? 'Reste à payer' : 'Monnaie'} : <strong>{formatMoney(paymentMethod === 'CREDIT' ? due : change)}</strong></p>
         <button disabled={!cart.length || (paymentMethod === 'CREDIT' && !customerId)} onClick={() => void checkout()}>Valider la vente</button>
       </section>
       {lastSale && <section role="status"><h2>Vente enregistrée</h2><p>Reçu : {lastSale.receiptNumber}</p><p>Total : {formatMoney(lastSale.total)}</p><p>Bénéfice brut : {formatMoney(lastSale.grossProfit)}</p></section>}
-      <section><h2>Dernières ventes</h2><p>Historique disponible dans le module Ventes.</p></section>
     </main>
   );
 }
