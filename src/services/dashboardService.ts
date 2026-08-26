@@ -4,29 +4,18 @@ export type DashboardPeriod = { from?: string; to?: string };
 export type DashboardTopProduct = { productId: string; productName: string; quantity: number; revenue: number; grossProfit: number };
 export type DashboardRecentSale = { id: string; receiptNumber: string; total: number; paymentMethod: string; createdAt: string };
 export type DashboardRecentExpense = { id: string; label: string; amount: number; category: string; expenseDate: string };
-export type DashboardReceivable = { customerId: string; balance: number; originalAmount: number; status: string };
+export type DashboardReceivable = { customerId: string; customerName: string; customerPhone?: string; balance: number; originalAmount: number; status: string };
 export type DashboardMetrics = {
-  revenue: number;
-  costOfGoods: number;
-  grossProfit: number;
-  expenses: number;
-  netProfit: number;
-  salesCount: number;
-  customerReceivables: number;
-  stockValue: number;
-  lowStockCount: number;
-  outOfStockCount: number;
-  topProducts: DashboardTopProduct[];
-  recentSales: DashboardRecentSale[];
-  recentExpenses: DashboardRecentExpense[];
-  receivables: DashboardReceivable[];
+  revenue: number; costOfGoods: number; grossProfit: number; expenses: number; netProfit: number; salesCount: number;
+  customerReceivables: number; stockValue: number; lowStockCount: number; outOfStockCount: number;
+  topProducts: DashboardTopProduct[]; recentSales: DashboardRecentSale[]; recentExpenses: DashboardRecentExpense[]; receivables: DashboardReceivable[];
 };
 
 export function createDashboardService(database: ZoyeDatabase) {
   return {
     async getMetrics(period: DashboardPeriod = {}): Promise<DashboardMetrics> {
-      const [sales, products, credits, expenses] = await Promise.all([
-        database.sales.toArray(), database.products.toArray(), database.creditAccounts.toArray(), database.expenses.toArray(),
+      const [sales, products, customers, credits, expenses] = await Promise.all([
+        database.sales.toArray(), database.products.toArray(), database.customers.toArray(), database.creditAccounts.toArray(), database.expenses.toArray(),
       ]);
       const start = period.from ? new Date(period.from).getTime() : -Infinity;
       const end = period.to ? new Date(period.to).getTime() : Infinity;
@@ -42,8 +31,13 @@ export function createDashboardService(database: ZoyeDatabase) {
         current.quantity += item.quantity; current.revenue += item.subtotal; current.grossProfit += item.subtotal - item.costTotal; productMap.set(item.productId, current);
       }
       const topProducts = [...productMap.values()].sort((a, b) => b.revenue - a.revenue).slice(0, 5);
-      const customerReceivables = credits.filter((credit) => credit.status !== 'CANCELLED').reduce((sum, credit) => sum + credit.balance, 0);
-      const receivables = credits.filter((credit) => credit.status !== 'CANCELLED' && credit.balance > 0).sort((a, b) => b.balance - a.balance).slice(0, 5).map((credit) => ({ customerId: credit.customerId, balance: credit.balance, originalAmount: credit.originalAmount, status: credit.status }));
+      const customerMap = new Map(customers.map((customer) => [customer.id, customer]));
+      const activeCredits = credits.filter((credit) => credit.status !== 'CANCELLED' && credit.balance > 0);
+      const customerReceivables = activeCredits.reduce((sum, credit) => sum + credit.balance, 0);
+      const receivables = activeCredits.sort((a, b) => b.balance - a.balance).slice(0, 5).map((credit) => {
+        const customer = customerMap.get(credit.customerId);
+        return { customerId: credit.customerId, customerName: customer?.name ?? 'Client inconnu', customerPhone: customer?.phone, balance: credit.balance, originalAmount: credit.originalAmount, status: credit.status };
+      });
       const stockValue = products.filter((product) => product.active).reduce((sum, product) => sum + product.stockQuantity * product.purchasePrice, 0);
       return {
         revenue, costOfGoods, grossProfit, expenses: expenseTotal, netProfit: grossProfit - expenseTotal, salesCount: filteredSales.length, customerReceivables, stockValue,
