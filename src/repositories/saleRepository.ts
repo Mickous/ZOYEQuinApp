@@ -10,10 +10,18 @@ export const saleRepository = {
     return rows.sort((a, b) => b.createdAt.localeCompare(a.createdAt)).slice(0, limit);
   },
   async cancel(id: string): Promise<Sale> {
-    return db.transaction('rw', db.sales, db.products, db.stockMovements, async () => {
+    return db.transaction('rw', db.sales, db.products, db.stockMovements, db.creditAccounts, async () => {
       const sale = await db.sales.get(id);
       if (!sale) throw new Error('Vente introuvable.');
       if (sale.status === 'CANCELLED') throw new Error('Cette vente est déjà annulée.');
+
+      if (sale.paymentMethod === 'CREDIT') {
+        const credit = await db.creditAccounts.where('saleId').equals(sale.id).first();
+        if (credit && credit.paidAmount > 0) {
+          throw new Error('Cette vente à crédit a déjà reçu un paiement. Le remboursement financier doit être enregistré avant son annulation.');
+        }
+      }
+
       const now = new Date().toISOString();
       for (const item of sale.items) {
         const product = await db.products.get(item.productId);
@@ -22,6 +30,12 @@ export const saleRepository = {
         await db.products.put(updated);
         await db.stockMovements.add({ id: `stock_cancel_${sale.id}_${item.id}`, productId: item.productId, type: 'IN', quantityDelta: item.quantity, quantityBefore: product.stockQuantity, quantityAfter: updated.stockQuantity, reason: `Annulation ${sale.receiptNumber}`, referenceId: sale.id, unitCost: item.unitCost, createdAt: now });
       }
+
+      if (sale.paymentMethod === 'CREDIT') {
+        const credit = await db.creditAccounts.where('saleId').equals(sale.id).first();
+        if (credit) await db.creditAccounts.put({ ...credit, status: 'CANCELLED', balance: 0, updatedAt: now });
+      }
+
       const updatedSale = { ...sale, status: 'CANCELLED' as const, updatedAt: now };
       await db.sales.put(updatedSale);
       return updatedSale;
