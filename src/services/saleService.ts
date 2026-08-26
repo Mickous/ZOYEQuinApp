@@ -18,77 +18,58 @@ export const saleService = {
     if (input.paymentMethod === 'CREDIT' && !input.customerId) throw new Error('Un client est obligatoire pour une vente à crédit.');
 
     return db.transaction('rw', db.sales, db.products, db.stockMovements, async () => {
-      const saleItems: SaleItem[] = [];
-
+      const grouped = new Map<string, { quantity: number; unitPrice?: number }>();
       for (const line of input.items) {
         if (!Number.isFinite(line.quantity) || line.quantity <= 0) throw new Error('Quantité de vente invalide.');
-        const product = await db.products.get(line.productId);
+        const existing = grouped.get(line.productId);
+        if (existing) {
+          existing.quantity += line.quantity;
+          if (line.unitPrice !== undefined) existing.unitPrice = line.unitPrice;
+        } else grouped.set(line.productId, { quantity: line.quantity, unitPrice: line.unitPrice });
+      }
+
+      const saleItems: SaleItem[] = [];
+      for (const [productId, line] of grouped) {
+        const product = await db.products.get(productId);
         if (!product || !product.active) throw new Error('Produit introuvable ou inactif.');
         if (product.stockQuantity < line.quantity) throw new Error(`Stock insuffisant pour ${product.name}.`);
-
         const unitPrice = line.unitPrice ?? product.sellingPrice;
         if (!Number.isFinite(unitPrice) || unitPrice < 0) throw new Error(`Prix invalide pour ${product.name}.`);
 
         saleItems.push({
-          id: createId('line'),
-          productId: product.id,
-          productName: product.name,
-          unit: product.unit,
-          quantity: line.quantity,
-          unitPrice,
-          unitCost: product.purchasePrice,
-          subtotal: line.quantity * unitPrice,
-          costTotal: line.quantity * product.purchasePrice,
+          id: createId('line'), productId: product.id, productName: product.name, unit: product.unit,
+          quantity: line.quantity, unitPrice, unitCost: product.purchasePrice,
+          subtotal: line.quantity * unitPrice, costTotal: line.quantity * product.purchasePrice,
         });
       }
 
       const subtotal = saleItems.reduce((sum, item) => sum + item.subtotal, 0);
       const discount = input.discount ?? 0;
       if (!Number.isFinite(discount) || discount < 0 || discount > subtotal) throw new Error('Remise invalide.');
-
       const total = subtotal - discount;
-      if (input.amountPaid > total && input.paymentMethod === 'CREDIT') throw new Error('Une vente à crédit ne peut pas être surpayée.');
+      if (input.paymentMethod === 'CREDIT' && input.amountPaid > total) throw new Error('Une vente à crédit ne peut pas être surpayée.');
       if (input.paymentMethod !== 'CREDIT' && input.amountPaid < total) throw new Error('Le montant payé est insuffisant.');
 
       const totalCost = saleItems.reduce((sum, item) => sum + item.costTotal, 0);
+      const now = new Date().toISOString();
       const sale: Sale = {
-        id: createId('sale'),
-        receiptNumber: `V-${Date.now()}`,
-        items: saleItems,
-        subtotal,
-        discount,
-        total,
-        totalCost,
-        grossProfit: total - totalCost,
-        paymentMethod: input.paymentMethod,
-        amountPaid: input.amountPaid,
-        amountDue: total - input.amountPaid,
-        customerId: input.customerId,
-        sellerId: input.sellerId,
-        status: 'COMPLETED',
-        createdAt: new Date().toISOString(),
-        updatedAt: new Date().toISOString(),
+        id: createId('sale'), receiptNumber: `V-${Date.now()}-${Math.random().toString(36).slice(2, 7).toUpperCase()}`,
+        items: saleItems, subtotal, discount, total, totalCost, grossProfit: total - totalCost,
+        paymentMethod: input.paymentMethod, amountPaid: input.amountPaid, amountDue: Math.max(0, total - input.amountPaid),
+        customerId: input.customerId, sellerId: input.sellerId, status: 'COMPLETED', createdAt: now, updatedAt: now,
       };
 
       for (const item of saleItems) {
         const product = await db.products.get(item.productId);
-        if (!product) throw new Error('Produit introuvable.');
-        const updated = { ...product, stockQuantity: product.stockQuantity - item.quantity, updatedAt: sale.createdAt };
+        if (!product) throw new Error(`Produit introuvable : ${item.productName}.`);
+        const updated = { ...product, stockQuantity: product.stockQuantity - item.quantity, updatedAt: now };
         await db.products.put(updated);
-        await db.stockMovements.put({
-          id: createId('stock'),
-          productId: product.id,
-          type: 'OUT',
-          quantityDelta: -item.quantity,
-          quantityBefore: product.stockQuantity,
-          quantityAfter: updated.stockQuantity,
-          reason: `Vente ${sale.receiptNumber}`,
-          referenceId: sale.id,
-          unitCost: product.purchasePrice,
-          createdAt: sale.createdAt,
+        await db.stockMovements.add({
+          id: createId('stock'), productId: product.id, type: 'OUT', quantityDelta: -item.quantity,
+          quantityBefore: product.stockQuantity, quantityAfter: updated.stockQuantity,
+          reason: `Vente ${sale.receiptNumber}`, referenceId: sale.id, unitCost: product.purchasePrice, createdAt: now,
         });
       }
-
       await db.sales.add(sale);
       return sale;
     });
