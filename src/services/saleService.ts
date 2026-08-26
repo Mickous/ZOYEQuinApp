@@ -10,6 +10,7 @@ export type CreateSaleInput = {
   amountPaid: number;
   customerId?: string;
   sellerId?: string;
+  initialCreditPaymentMethod?: 'CASH' | 'MOBILE_MONEY' | 'CARD' | 'OTHER';
 };
 
 export function createSaleService(database: ZoyeDatabase = defaultDb) {
@@ -18,6 +19,7 @@ export function createSaleService(database: ZoyeDatabase = defaultDb) {
       if (!input.items.length) throw new Error('Une vente doit contenir au moins un produit.');
       if (!Number.isFinite(input.amountPaid) || input.amountPaid < 0) throw new Error('Montant payé invalide.');
       if (input.paymentMethod === 'CREDIT' && !input.customerId) throw new Error('Un client est obligatoire pour une vente à crédit.');
+      if (input.paymentMethod === 'CREDIT' && input.amountPaid > 0 && !input.initialCreditPaymentMethod) throw new Error('Le mode du paiement initial est obligatoire.');
 
       return database.transaction('rw', database.sales, database.products, database.stockMovements, database.customers, database.creditAccounts, database.creditPayments, async () => {
         const grouped = new Map<string, { quantity: number; unitPrice?: number }>();
@@ -71,8 +73,7 @@ export function createSaleService(database: ZoyeDatabase = defaultDb) {
           const credit: CreditAccount = { id: createId('credit'), customerId: input.customerId!, saleId: sale.id, originalAmount: total, paidAmount: paid, balance, status: balance === 0 ? 'PAID' : paid > 0 ? 'PARTIAL' : 'OPEN', createdAt: now, updatedAt: now };
           await database.creditAccounts.add(credit);
           if (paid > 0) {
-            const initialPayment: CreditPayment = { id: createId('payment'), creditAccountId: credit.id, customerId: input.customerId!, amount: paid, paymentMethod: 'CASH', note: `Paiement initial de la vente ${sale.receiptNumber}`, createdAt: now };
-            await database.creditPayments.add(initialPayment);
+            await database.creditPayments.add({ id: createId('payment'), creditAccountId: credit.id, customerId: input.customerId!, amount: paid, paymentMethod: input.initialCreditPaymentMethod!, note: `Paiement initial de la vente ${sale.receiptNumber}`, createdAt: now });
           }
         }
         return sale;
