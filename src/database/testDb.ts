@@ -2,6 +2,7 @@ import Dexie, { type Table } from 'dexie';
 import type { Category, Product, StockMovement } from '../models/inventory';
 import type { Sale } from '../models/sales';
 import type { Customer, CreditAccount, CreditPayment } from '../models/customer';
+import type { Expense } from '../models/expenses';
 
 export class TestZoyeDatabase extends Dexie {
   categories!: Table<Category, string>;
@@ -11,6 +12,7 @@ export class TestZoyeDatabase extends Dexie {
   customers!: Table<Customer, string>;
   creditAccounts!: Table<CreditAccount, string>;
   creditPayments!: Table<CreditPayment, string>;
+  expenses!: Table<Expense, string>;
 
   constructor(name = `zoyequinapp_test_${Date.now()}_${Math.random()}`) {
     super(name);
@@ -22,6 +24,7 @@ export class TestZoyeDatabase extends Dexie {
       customers: 'id, name, phone, active, updatedAt',
       creditAccounts: 'id, customerId, saleId, status, createdAt, updatedAt',
       creditPayments: 'id, creditAccountId, customerId, paymentMethod, createdAt',
+      expenses: 'id, category, expenseDate, paymentMethod, createdAt',
     });
   }
 }
